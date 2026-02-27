@@ -1,151 +1,114 @@
-# Digital VFD Sim-Dashboard
+# Arduino Sim-Dashboard
 
-Digital instrument cluster for racing and truck simulators with VFD-like visual styling.
+Two hardware dashboards for sim racing and truck simulators, both integrated with SimHub over Serial.
 
-## Description
+## What's Inside
 
-This project is a hardware instrument panel for racing and truck simulators (Assetto Corsa, ETS2, ATS, etc.) with SimHub integration. Uses ESP32-S3 and a color TFT display to show telemetry in the style of vintage vacuum fluorescent displays.
+**dashboard_digital.ino** -- Digital dashboard with VFD-style rendering on a TFT screen.
+Uses ESP32-S3 and a 3.5" color display. Shows RPM bar, speed, gear, gauges (coolant, oil, fuel), throttle/brake bars, and status icons -- all drawn with a cyan glow effect on black background.
 
-The panel displays main vehicle parameters in real time:
-- Tachometer with color zones (green / yellow / red)
-- Speedometer
-- Gear indicator
-- Coolant temperature
-- Oil pressure
-- Fuel level
-- Throttle and brake pedal positions
-- Status indicators (turn signals, high beam, cruise control, ABS, etc.)
+**dashboard_galant.ino** -- Physical analog dashboard in Mitsubishi Galant style.
+Uses Arduino Mega 2560 with four stepper motors (speedometer, tachometer, fuel, coolant temp), 28 addressable RGB LEDs for indicators and backlight, a piezo speaker for turn signal clicks, and physical buttons for color cycling and reset.
 
-## Requirements
+Both share the same SimHub telemetry protocol and JavaScript code. Both work with racing sims (Assetto Corsa, ACC, iRacing) and truck sims (ETS2, ATS).
 
-### Hardware
+## Hardware
 
-**Microcontroller:**
-- ESP32-S3-N16R8 (16MB Flash, 8MB PSRAM)
+### Digital (ESP32)
 
-**Display:**
-- TFT SPI 3.5" (480x320), ST7796 controller
+| Part | Spec |
+|------|------|
+| MCU | ESP32-S3-N16R8 (16MB Flash, 8MB PSRAM) |
+| Display | TFT SPI 3.5" 480x320, ST7796 |
+| Connection | USB CDC |
 
-**Wiring:**
+Wiring:
 ```
-MOSI: GPIO 11  →  Display SDI
-SCLK: GPIO 12  →  Display SCK
-DC:   GPIO  9  →  Display DC
-RST:  GPIO  8  →  Display RESET
-CS:   GPIO 10  →  Display CS
-LED:  GPIO 13  →  Display LED (PWM)
-VCC:  5V
-GND:  GND
+MOSI: GPIO 11    SCLK: GPIO 12    DC: GPIO 9
+RST:  GPIO  8    CS:   GPIO 10    LED: GPIO 13 (PWM)
+VCC: 5V, GND: GND
 ```
 
-### Software
+### Galant (Arduino Mega)
 
-**Arduino IDE:**
-- Arduino IDE 1.8.x or 2.x
-- ESP32 board support installed (esp32 by Espressif Systems)
+| Part | Spec |
+|------|------|
+| MCU | Arduino Mega 2560 (CH340, USB-C) |
+| Motors | 4x X27-168 stepper (via 4x TB6612FNG) |
+| LEDs | 28x WS2812B (indicators, shift lights, RGB backlight) |
+| Speaker | Passive piezo (turn signal click) |
+| Controls | RESET button, COLOR button, B10K potentiometer (brightness) |
 
-**Libraries:**
-- LovyanGFX (version 1.x) - for display control
+Gauge sweeps: Speedometer 260 deg (0-220 km/h), Tachometer 265 deg (0-8000 RPM), Fuel 150 deg, Coolant 130 deg.
 
-**Integration:**
-- SimHub (free version) - for telemetry transmission
-- USB connection (CDC) between PC and ESP32
+## Libraries
 
-## Components and Modules
+- **Digital:** LovyanGFX 1.x
+- **Galant:** FastLED
 
-### Main Code Modules
-
-**Display Configuration (LGFX)**
-- ST7796 configuration class via SPI
-- Bus parameters: 80 MHz write, SPI mode 0
-- Hardware SPI support (SPI2_HOST)
-
-**Telemetry Processing**
-- Data parsing from SimHub via Serial (USB CDC)
-- Format: key-value pairs separated by semicolons
-- Universal telemetry support for different simulators
-
-**Visualization**
-- VFD glow effect (multi-layer text rendering)
-- Color palette in vacuum fluorescent display style
-- Smooth animation via EMA filters
-- Adaptive tachometer scale with zones (green/yellow/orange/red)
-
-**Status Indicators**
-- 9 icons at top of screen: turn signals, ABS, high/low beam, hazards, cruise, low fuel, oil pressure
-- Blinking turn signals and hazard lights
-- Automatic detection of available game data
-
-**Safety System**
-- Watchdog Timer (5 seconds)
-- SimHub data timeout (3 seconds)
-- System states: BOOT / RUNNING / ERROR
-
-### Screen Layout
-
-```
-┌─────────────────────────────────────────────────────┐
-│ [←][ABS][LOW][HAZ][HI][LIM][FUEL][OIL][→]          │  Indicators
-├─────────────────────────────────────────────────────┤
-│ [████████████████████░░░░░░░░░] RPM BAR            │  RPM bar
-├─────────────────────────────────────────────────────┤
-│ ┌──────────┬────────────────┬──────────┐           │
-│ │ COOLANT  │                │  8245    │           │
-│ │ [████░░] │       4        │   RPM    │           │
-│ │ OIL-P    │                │          │           │
-│ │ [██████] │     GEAR       │   235    │           │  Main information
-│ │ FUEL     │                │   KMH    │           │
-│ │ [██░░░░] │                │          │           │
-│ └──────────┴────────────────┴──────────┘           │
-├─────────────────────────────────────────────────────┤
-│ BRK [████████░░░░░░░░░] THR [░░░░░████████]        │  Pedals
-└─────────────────────────────────────────────────────┘
-```
+Both need the respective board support packages installed in Arduino IDE (ESP32 / AVR).
 
 ## SimHub Setup
 
-In SimHub you need to add a Custom Serial Device with the following JavaScript code (included in the source file comments):
+1. Open SimHub -> Settings -> Custom Serial Devices -> New Device
+2. Set type to Custom protocol, pick the right COM port
+3. Paste the JavaScript from the top of either .ino file (they use the same script)
+4. Baud rate: 115200
 
-**Location:** Settings → Custom Serial Devices → New Device
-- Type: Custom protocol
-- COM port: select ESP32
-- Speed: 115200 baud (default)
+The script sends telemetry as key-value pairs: `KMH:120;RPM:5400;GEAR:3;FUEL:65;...`
 
-The script automatically formats telemetry packet with all parameters and sends via Serial.
+Covers speed, RPM, max RPM, gear, fuel, water temp, oil pressure/temp, throttle, brake, plus indicators -- ABS, TC, turn signals, hazards, lights, handbrake, cruise control, shift lights, and truck-specific warnings.
 
-## Usage
+## How It Works
 
-1. Upload firmware to ESP32-S3 via Arduino IDE
-2. Connect display according to wiring diagram
-3. Configure Custom Serial Device in SimHub
-4. Launch simulator and SimHub
-5. Panel will automatically start displaying telemetry
+Both dashboards follow the same pattern:
+- Parse incoming Serial data from SimHub
+- Smooth values with EMA filters to avoid jitter
+- Detect what data the game actually provides and fill in sensible defaults where needed
+- Handle SimHub disconnection gracefully (timeout 1-3 seconds)
+- Watchdog timer for auto-recovery on hang
 
-If no data from SimHub (more than 3 seconds), screen will display connection loss message.
+### Digital-specific
+- Renders to a full-screen sprite buffer at ~30 FPS
+- VFD glow effect: three-layer text rendering (outer glow, inner glow, core)
+- RPM bar with color zones (green / yellow / orange / red)
+- Vertical gauges for coolant, oil pressure, fuel on the left
+- Horizontal bars for brake and throttle at the bottom
 
-## Features
+### Galant-specific
+- Drives four stepper motors with half-step sequences (1080 steps/rev)
+- 4-stage shift light (green -> yellow -> orange -> red strobe at 13 Hz)
+- Turn signal speaker clicks (two-tone pulse simulating relay)
+- Welcome animation on startup (all needles sweep, LEDs fade)
+- 20 RGB backlight color presets cycled with button
+- Brightness controlled by potentiometer
 
-- Universal support: works with racing simulators (AC, ACC, iRacing) and truck sims (ETS2, ATS)
-- Adaptive logic: automatically detects available parameters from game
-- Smooth animation: EMA filters to eliminate jitter
-- VFD styling: glow effect on dark background
-- Resource efficient: sprite buffer rendering (30 FPS)
-- Reliable: built-in watchdog and connection loss handling
+## Screen Layout (Digital)
 
-## Technical Details
+```
++---------------------------------------------------------+
+| [<-][ABS][LOW][HAZ][HI][LIM][FUEL][OIL][->]   Icons    |
+|---------------------------------------------------------|
+| [================----------]                   RPM bar  |
+|---------------------------------------------------------|
+| COOLANT  |              |  8245 RPM                     |
+| OIL-P    |      4       |                               |
+| FUEL     |    GEAR      |   235 KMH                     |
+|---------------------------------------------------------|
+| BRK [========-------] THR [------========]     Pedals   |
++---------------------------------------------------------+
+```
 
-**Performance:**
-- Refresh rate: ~30 FPS (33ms per frame)
-- Baud rate: 115200
-- Smoothing: EMA alpha = 0.4
+## LED Layout (Galant)
 
-**Color Palette:**
-- Main VFD: #04C4CA (cyan)
-- Warnings: #FF8C00 (orange)
-- Critical: #FF0040 (red)
-- High beam: blue
-- Throttle: green
+28 LEDs total, organized in physical groups:
+- Turn signals (2) + high beam (1)
+- Speedometer indicators: overheat, check engine, low oil, hazard, low battery
+- Tachometer indicators: ABS, TC, low beam/parking, doors, handbrake
+- Center: low fuel
+- Shift lights (2, dynamic color)
+- RGB backlight (3 groups, 12 LEDs total)
 
 ---
 
-Project created for simracing enthusiasts. Open for modifications and improvements.
+Built for sim racing enthusiasts. Modify freely.
