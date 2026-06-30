@@ -308,8 +308,13 @@ void drawVFDText(const String &text, int x, int y, uint16_t color)
   {
     for (int dy = -2; dy <= 2; dy++)
     {
-      if (dx != 0 || dy != 0)
-        sprite.drawString(text, x + dx, y + dy);
+      if (dx == 0 && dy == 0)
+        continue; // core, drawn in STEP 3
+      // Skip the 4 cardinal 1px offsets: the brighter inner-glow pass below
+      // overdraws them, so omitting them is pixel-identical but cheaper.
+      if ((dx == 0 && (dy == 1 || dy == -1)) || (dy == 0 && (dx == 1 || dx == -1)))
+        continue;
+      sprite.drawString(text, x + dx, y + dy);
     }
   }
 
@@ -552,7 +557,8 @@ void drawRPMBar()
     uint16_t color;
     if (segmentPct >= 92.0f)
     {
-      color = (segmentPct >= 96.0f && blinkState) ? COLOR_PEAK_RED : COLOR_PEAK_RED;
+      // Redline zone solid red; >=96% flashes as a limiter cue (blinkState clock)
+      color = (segmentPct >= 96.0f && !blinkState) ? COLOR_GHOST : COLOR_PEAK_RED;
     }
     else if (segmentPct >= 88.0f)
     {
@@ -912,6 +918,19 @@ void updateDashboard()
   drawGear();     // Center
   drawInfo();     // Right side
   drawPedals();   // 280-320px
+
+  // No-signal hint: blink when SimHub data is stale/disconnected
+  if ((millis() - lastSimhubPacket) >= SIMHUB_TIMEOUT && blinkState)
+  {
+    sprite.setFont(&fonts::FreeSans9pt7b);
+    sprite.setTextSize(1);
+    sprite.setTextDatum(middle_center);
+    sprite.setTextColor(COLOR_WARNING);
+    sprite.drawString("NO SIGNAL", 240, 250);
+    sprite.setFont(nullptr);
+    sprite.setTextDatum(top_left);
+  }
+
   sprite.pushSprite(0, 0);
 }
 

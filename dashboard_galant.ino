@@ -5,17 +5,17 @@
   - Arduino Mega 2560 CH340 (USB-C)
   - 4x X27-168 stepper motors (Speedometer, Tachometer, Fuel Level, Coolant Temp)
   - 4x TB6612FNG dual H-bridge drivers (1 per motor)
-  - 22x WS2812B RGB LEDs (5V, addressable)
+  - 28x WS2812B RGB LEDs (5V, addressable)
   - 1x Passive Piezo Speaker (D47, turn signal click sound)
   - 1x RESET button (D48)
   - 1x COLOR button (D49) - cycle RGB backlight colors
   - 1x B10K Potentiometer (A0) - backlight brightness control
 
-  Gauge Angles (physical rotation from 7:30 position):
-  - Speedometer: 210° → 360° (150° sweep, 0-220 km/h)
-  - Tachometer:  210° → 350° (140° sweep, 0-8000 rpm)
-  - Fuel Level:  230° → 320° (90° sweep, E → F)
-  - Coolant Temp: 230° → 310° (80° sweep, C → H)
+  Gauge Angles (sweep from zero stop, see *_MAX_ANGLE constants):
+  - Speedometer: 260 deg sweep (0-220 km/h)
+  - Tachometer:  265 deg sweep (0-8000 rpm)
+  - Fuel Level:  150 deg sweep (E -> F)
+  - Coolant Temp: 130 deg sweep (C -> H)
 
   Dashboard Indicators (via WS2812B):
   Under Tachometer (5 indicators):
@@ -35,7 +35,7 @@
   Center (1 indicator):
   - Fuel Low (orange)
 
-  Shift Light (1 LED, dynamic 4-stage):
+  Shift Light (2 LEDs, dynamic 4-stage):
   - <70% RPM: OFF
   - 70-88% RPM: Green (solid)
   - 88-92% RPM: Yellow (solid)
@@ -48,7 +48,7 @@
 
   Other:
   - High Beam Headlights (blue)
-  - RGB Backlight (6 LEDs, warm white default, adjustable via COLOR button)
+  - RGB Backlight (12 LEDs in 3 groups, warm white default, adjustable via COLOR button)
 
   SimHub Protocol:
   - One-way passive reception on Serial (115200 baud)
@@ -58,7 +58,7 @@
 
   Features:
   - Exponential smoothing (alpha=0.3) with jump protection
-  - SimHub timeout (3s) - needles freeze on disconnect
+  - SimHub timeout (1s) - needles freeze on disconnect
   - Watchdog timer (4s) - auto-reboot on hang
   - Fast shift light strobe (75ms, 13 Hz) at critical RPM
   - Welcome animation: all 4 needles sweep min→max→min in parallel, RGB LEDs fade in/out
@@ -260,8 +260,6 @@ float curWaterTemp = -1.0f; // °C
 const float LAST_GOOD_KMH = 30.0f; // Last good speed for jump protection
 
 float curOilPress = -1.0f; // bar
-float curOilTemp = -1.0f;  // °C
-int curGear = 0;           // N=0
 
 // Extreme event: force needles to zero (like welcome animation)
 bool forceSpeedToZero = false;
@@ -287,7 +285,6 @@ bool warningAirPress = false;
 bool warningOilPress = false;
 bool warningBatteryVolt = false;
 bool warningWaterTemp = false;
-bool indIgnition = false;
 
 // Last good values for jump protection
 float lastGoodKmh = -1.0f;
@@ -313,6 +310,8 @@ const float MAX_JUMP_OILP = 5.0f;    // was 2
 // EMA smoothing for low-speed deceleration (realistic instrument inertia)
 const float SMOOTH_ALPHA_LOW = 0.65f;    // Alpha for EMA at low speeds
 const float LOW_SPEED_THRESHOLD = 30.0f; // Apply EMA only when decelerating below 30 km/h
+const float SPEED_ZERO_SNAP = 2.0f;      // Below this (km/h) snap speed to exact 0 (needle can't show <2)
+const float BIG_DROP_SPEED = 25.0f;      // Drop >this (km/h) in one packet = real event, bypass EMA (no lag)
 const float LOW_RPM_THRESHOLD = 800.0f;  // Apply EMA only when decelerating below 800 RPM
 
 // Fixed gauge limits (Mitsubishi Galant physical gauge)
@@ -326,9 +325,7 @@ const float RPM_ZONE_ORANGE_START = 92.0f; // Orange zone starts at 92%
 const float RPM_ZONE_RED_START = 96.0f;    // Red zone starts at 96% (critical)
 
 // Dynamic shift lights from SimHub (updated per car)
-float curMaxRPM = 8000.0f; // Current car max RPM (from SimHub)
-bool shiftLightRpm1_archived = false;
-bool shiftLightRpm2_archived = false;
+float curMaxRPM = 8000.0f;          // Current car max RPM (from SimHub)
 bool indShiftLight = false;         // Shift light state (single LED)
 CRGB shiftLightColor = CRGB::Black; // Current shift light color
 
@@ -356,6 +353,10 @@ const unsigned long SIMHUB_TIMEOUT_MS = 1000;
 // Watchdog
 const unsigned long WDT_RESET_INTERVAL = 100;
 unsigned long lastWdtReset = 0;
+
+// Free-RAM diagnostic (logs every 10s to detect heap fragmentation over time)
+unsigned long lastRamReport = 0;
+const unsigned long RAM_REPORT_INTERVAL = 10000;
 
 // Serial buffer (char array for stability, not String!)
 const int SERIAL_MAX_BUFFER = 512; // Increased to handle longer SimHub strings
@@ -432,14 +433,14 @@ const int LED_LOW_OIL = 9;      // LED 9: Low oil pressure (orange)
 const int LED_HAZARD_IND = 10;  // LED 10: Hazard lights (red)
 const int LED_LOW_BATTERY = 11; // LED 11: Low battery (red)
 
-// Backlight 2 (15-16)
+// Backlight 2 (12-13)
 const int LED_BACKLIGHT_2_START = 12; // 2 LEDs: 12-13 (second backlight group)
 const int LED_BACKLIGHT_2_COUNT = 2;
 
 // Center indicator (14)
 const int LED_FUEL_LOW = 14; // LED 14: Low fuel level (orange)
 
-// Shift lights (12-13)
+// Shift lights (15-16)
 const int LED_SHIFT_LIGHT_1 = 15; // LED 15: Shift light 1 (dynamic color)
 const int LED_SHIFT_LIGHT_2 = 16; // LED 16: Shift light 2 (dynamic color)
 
@@ -462,6 +463,16 @@ unsigned long lastBrightnessRead = 0;
 const unsigned long BRIGHTNESS_READ_INTERVAL = 100; // Read every 100ms
 
 // --------------------------- UTILITY FUNCTIONS ---------------------------
+// Free SRAM in bytes: measures the gap between the heap top and the stack.
+// Read-only diagnostic, does not touch the motor/serial hot path.
+extern unsigned int __heap_start;
+extern void *__brkval;
+int freeMemory()
+{
+  int v;
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
+
 bool inRangeFloat(float v, float minv, float maxv)
 {
   return (v >= minv && v <= maxv);
@@ -732,7 +743,12 @@ void handleTurnSignalClick()
   // Click when signal goes from 0 to 1 (rising edge)
   if (currentState && !lastTurnSignalState)
   {
-    playClick(true); // ON click
+    playClick(true); // ON click (relay pull-in)
+  }
+  // Click when signal goes from 1 to 0 (falling edge) - relay release
+  else if (!currentState && lastTurnSignalState)
+  {
+    playClick(false); // OFF click (relay release)
   }
 
   lastTurnSignalState = currentState;
@@ -764,7 +780,7 @@ void computeIndicators()
   // CHECK_ENGINE: overheat OR low oil pressure OR engine damage
   indCheckEngine = (curWaterTemp > TEMP_MAX - 10.0f) || (curOilPress > 0 && curOilPress < 0.5f) || (!indEngineRunning) || warningAirPress || warningOilPress || warningBatteryVolt;
 
-  // FUEL_LOW: less than 10%
+  // FUEL_LOW: less than 15%
   indFuelLow = (curFuel >= 0 && curFuel <= 15.0f);
 
   // LOW_OIL_PRESSURE: pressure near zero
@@ -872,18 +888,27 @@ void parseKeyValueLine(const String &line)
       else
       {
         float nv = val.toFloat();
+        // Capture a TRUE game zero (restart/full stop) BEFORE the deadzone, so the synced
+        // force-to-zero sweep fires only on a real zero - not on a deadzoned residual/glitch.
+        bool gameReportsZero = (nv == 0.0f);
+        // Deadzone: a physical needle can't meaningfully show <2 km/h. Snapping tiny
+        // crash/settle residuals to exact 0 lets the big-drop bypass drive the needle home.
+        if (nv < SPEED_ZERO_SNAP)
+          nv = 0.0f;
         if (inRangeFloat(nv, SPEED_MIN, SPEED_MAX_POSS) && jumpOK(nv, lastGoodKmh, MAX_JUMP_SPEED))
         {
-          // EXTREME EVENT: Speed drop from 60+ to 0 (restart/crash)
-          if (lastGoodKmh >= LAST_GOOD_KMH && nv == 0.0f)
+          // EXTREME EVENT: only a real game zero (restart/full stop) triggers the synced sweep.
+          // Crash residuals (<2 km/h) reach zero via the big-drop bypass in the else branch.
+          if (lastGoodKmh >= LAST_GOOD_KMH && gameReportsZero)
           {
             forceSpeedToZero = true; // Force needle to zero like welcome animation
             curKmh = 0.0f;
           }
           else
           {
-            // Apply EMA only when decelerating below LOW_SPEED_THRESHOLD (realistic inertia)
-            if (nv < curKmh && nv < LOW_SPEED_THRESHOLD)
+            // EMA only for small gradual changes below threshold (damps jitter, keeps inertia).
+            // A large sudden drop is a real event (crash/hard brake) - apply directly, no lag.
+            if (nv < curKmh && nv < LOW_SPEED_THRESHOLD && (curKmh - nv) <= BIG_DROP_SPEED)
             {
               curKmh = smooth(curKmh, nv, SMOOTH_ALPHA_LOW);
             }
@@ -988,28 +1013,6 @@ void parseKeyValueLine(const String &line)
           curOilPress = -1.0f;
       }
     }
-    // Oil Temp
-    else if (key.equalsIgnoreCase("OILTEMP"))
-    {
-      if (val.length() == 0)
-        curOilTemp = -1.0f;
-      else
-      {
-        float nv = val.toFloat();
-        if (inRangeFloat(nv, TEMP_MIN, TEMP_MAX))
-        {
-          curOilTemp = nv;
-        }
-        else
-          curOilTemp = -1.0f;
-      }
-    }
-    // Gear
-    else if (key.equalsIgnoreCase("GEAR"))
-    {
-      if (val.length() > 0)
-        curGear = val.toInt();
-    }
     // Dynamic shift lights from SimHub
     else if (key.equalsIgnoreCase("MAXRPM"))
     {
@@ -1040,8 +1043,6 @@ void parseKeyValueLine(const String &line)
       if (indHighBeam == 1)
         highBeamSupportedByGame = true; // Mark as supported
     }
-    else if (key.equalsIgnoreCase("IGNITION"))
-      indIgnition = val.toInt();
     else if (key.equalsIgnoreCase("CHECKENGINE"))
       indCheckEngine = val.toInt();
     else if (key.equalsIgnoreCase("HANDBRAKE"))
@@ -1052,14 +1053,6 @@ void parseKeyValueLine(const String &line)
       indTC = val.toInt();
     else if (key.equalsIgnoreCase("CRUISE"))
       indCruise = val.toInt();
-    else if (key.equalsIgnoreCase("SHIFTLIGHT1"))
-    {
-      shiftLightRpm1_archived = val.toInt(); // Orange warning light
-    }
-    else if (key.equalsIgnoreCase("SHIFTLIGHT2"))
-    {
-      shiftLightRpm2_archived = val.toInt(); // Red critical light
-    }
     else if (key.equalsIgnoreCase("WARNING_AIR_PRESS"))
     {
       warningAirPress = val.toInt();
@@ -1116,8 +1109,6 @@ void readSimHubSerial()
         {
           // Reset all indicator variables before parsing new packet
           curMaxRPM = 8000.0f;
-          shiftLightRpm1_archived = false;
-          shiftLightRpm2_archived = false;
           indLeftTurn = false;
           indRightTurn = false;
           indHazard = false;
@@ -1127,7 +1118,6 @@ void readSimHubSerial()
           indABS = false;
           indTC = false;
           indCruise = false;
-          indIgnition = false;
           indCheckEngine = false;
           warningAirPress = false;
           warningOilPress = false;
@@ -1320,7 +1310,8 @@ void welcomeSequence()
   // Turn OFF all indicators (except backlight)
   for (int i = 0; i < NUM_LEDS; i++)
   {
-    // Skip backlight groups (3-6, 15-16, 22-27)
+    // Skip shift lights (15-16, idle as backlight) and backlight groups 1 & 3 (3-6, 22-27).
+    // Backlight group 2 (12-13) is cleared here and re-lit by setLEDRange below.
     if ((i >= 3 && i <= 6) || (i >= 15 && i <= 16) || (i >= 22 && i <= 27))
     {
       continue; // Keep backlight on
@@ -1385,11 +1376,9 @@ void doResetSequence()
   curFuel = -1.0f;
   curWaterTemp = -1.0f;
   curOilPress = -1.0f;
-  curOilTemp = -1.0f;
-  curGear = 0;
   indLeftTurn = indRightTurn = indHazard = false;
   indLowBeamOrParking = false;
-  indIgnition = indCheckEngine = indLowOilPressure = false;
+  indCheckEngine = indLowOilPressure = false;
   indHandbrake = indOverheat = indABS = false;
   indTC = false;
   indCruise = false;
@@ -1399,8 +1388,6 @@ void doResetSequence()
 
   // Reset dynamic shift light thresholds to defaults
   curMaxRPM = 8000.0f;
-  shiftLightRpm1_archived = false;
-  shiftLightRpm2_archived = false;
 
   // Reset light support detection
   parkingSupportedByGame = false;
@@ -1559,6 +1546,14 @@ void loop()
   {
     wdt_reset();
     lastWdtReset = millis();
+  }
+
+  // Free-RAM diagnostic (every 10s) - watch for a steady decline over a session
+  if (millis() - lastRamReport >= RAM_REPORT_INTERVAL)
+  {
+    lastRamReport = millis();
+    Serial.print(F("[RAM] free bytes: "));
+    Serial.println(freeMemory());
   }
 
   // Read SimHub data
